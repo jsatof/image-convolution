@@ -3,7 +3,7 @@
 
 int main(int argc, char **argv) {
 
-    std::string file_name = "kurisuavi.jpg";
+    std::string file_name = "harold.jpg";
     cv::Mat image;
     image = cv::imread(file_name, 1);
 
