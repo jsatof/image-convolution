@@ -1,54 +1,57 @@
-#include <iostream>
-#include <vector>
+#include <stdio.h>
+#include <stdlib.h>
 #include <math.h>
 #include <opencv2/opencv.hpp>
-#include "image.hpp"
 
-#define CV_LOAD_IMAGE_COLOR 1
-
-__global__ void apply_gaussian(unsigned char *image, int *kernel, int kernel_length, int channels) {
-    
+void check_pixel(int *value) {
+    if(*value > 255)
+        *value = 255;
+    if(*value < 0)
+        *value = 0;
 }
 
-// returns value for kernel at index x,y with omega of k, gaussian formula
-double gaussian(double x, double y, double sigma) {
-    return (1.0 / (2.0 * M_PI * pow(sigma, 2.0))) * exp(-(pow(x, 2.0) + pow(y, 2.0)) / (2 * pow(sigma, 2.0)));
-}
+int main(int argc, char **argv) {
+    cv::Mat image = cv::imread("images/harold.jpg");
 
-// initializes kernel with gaussian values, uses k as sigma
-void init_kernel(double *kernel, int kernel_length, int k) {
-    for(int x = -k; x <= k; x++) {
-        for(int y = -k; y <= k; y++) {
-            kernel[(x + k) * kernel_length + (y + k)] = gaussian(x, y, 10);
-        }
+    int kernel_length = 11;
+    unsigned char *kernel = (unsigned char*) malloc(pow(kernel_length, 2) * sizeof(unsigned char));
+
+    for(int i = 0; i < pow(kernel_length, 2); i++) {
+        kernel[i] = 1;
     }
-}
 
-int main() {
-    std::string periphery = "images/periphery.jpg";
+    for(int i = 0; i < image.rows; i++) {
+        for(int j = 0; j < image.cols; j++) {
+            
+            int blue_sum = 0;
+            int green_sum = 0;
+            int red_sum = 0;
+            for(int u = -5; u <= 5; u++) {
+                for(int v = -5; v <= 5; v++) {
+                    if(i + u < image.rows && j + v < image.cols &&
+                       i + u >= 0 && j + v >= 0) {
 
-    cv::Mat image = cv::imread(periphery, CV_LOAD_IMAGE_COLOR);
-
-    int K = 10;
-    int kernel_length = 2 * K + 1;
-
-    double *kernel = (double*) malloc(pow(kernel_length, 2) * sizeof(double));
-    init_kernel(kernel, kernel_length, K);
-
-    try {
-        CV_Assert(image.channels() == 4);
-        for(int i = 0; i < image.rows; i++) {
-            for(int j = 0; j < image.cols; j++) {
-                cv::Vec4b& bgra = image.at<cv::Vec4b>(i, j);
-                bgra[3] = 100;          // alpha
+                        blue_sum  += kernel[(u + 5) * kernel_length + (v + 5)] * image.at<cv::Vec3b>(i + u, j + v)[0];
+                        green_sum += kernel[(u + 5) * kernel_length + (v + 5)] * image.at<cv::Vec3b>(i + u, j + v)[1];
+                        red_sum   += kernel[(u + 5) * kernel_length + (v + 5)] * image.at<cv::Vec3b>(i + u, j + v)[2]; 
+                    }
+                }
             }
+
+            // divide by length of kernel
+            int blue_value  = blue_sum  / pow(kernel_length, 2);
+            int green_value = green_sum / pow(kernel_length, 2);
+            int red_value   = red_sum   / pow(kernel_length, 2);
+
+            check_pixel(&blue_value);
+            check_pixel(&green_value);
+            check_pixel(&red_value);
+
+            image.at<cv::Vec3b>(i, j) = cv::Vec3b(blue_value, green_value, red_value);
         }
-    } catch(cv::Exception& e) {
-        std::cout << e.what() << std::endl;
     }
-
-
-    cv::imwrite("images/new_periphery.jpg", image);
+    
+    cv::imwrite("images/new_harold.jpg", image);
 
     return 0;
 }
