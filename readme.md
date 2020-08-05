@@ -1,5 +1,7 @@
 # Cuda Image Filters
-My implementations of a variety of filters and effects on images. It demonstrates what I have gathered in my endeavours in parallel GPU computing with the Nvidia CUDA toolkit.
+My implementations of a variety of filters and effects on images. It demonstrates what I have gathered in my endeavours in parallel GPU computing with the Nvidia CUDA toolkit. 
+
+This project is run on my Linux machine. I have not programmed with portability in mind, so results on other operating systems are not guarenteed.
 
 ## Dependencies
 - CUDA Toolkit 10.1
