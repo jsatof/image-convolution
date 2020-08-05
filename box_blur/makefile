@@ -13,5 +13,8 @@ $(PRGM): $(OBJS)
 $(OBJS): $(SRCS)
 	$(NVCC) $(NV_FLAGS) -c $^ $(OPENCV) -lm
 
+serial: serial.cpp
+	g++ $(NV_FLAGS) -o serial serial.cpp $(OPENCV)
+
 clean: 
 	rm -rf *.o $(PRGM)
