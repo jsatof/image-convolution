@@ -2,124 +2,176 @@
 #include <stdlib.h>
 #include <opencv2/opencv.hpp>
 
-// constant gpu memory to hold kernel. (fast access times)
-__constant__ double kernel_store[441]; 
-int kernel_length = 21;
+// fast memory block on gpu, 5x5 kernel
+__constant__ double device_kernel[25];
 
-__global__ void convolve(int *matrix, int height, int width, int kernel_length) {
+// prototype for helper functions
+std::string get_image_name(std::string arg);
+__global__ void convolve(int *matrix, int *result_matrix, int height, int width, double *device_kernel, int kernel_length);
+void init_kernel(double *kernel, int kernel_length);
+void normalize_kernel(double *kernel, int kernel_length);
+void get_image_matrix(cv::Mat image, int *matrix); 
+void set_image_matrix(cv::Mat image, int *matrix);
+
+
+int main(int argc, char **argv) {
+    if(argc != 2) {
+        std::cout << "usage: ./boxblur <image file to convolve>" << std::endl;
+        return 1;
+    }
+    
+    std::string filename = get_image_name(argv[1]);
+
+    if(filename.compare("invalid") == 0) {
+        std::cout << "Invalid Image." << std::endl;
+        return 1;
+    }
+
+    cv::Mat color_image = cv::imread(filename);
+    cv::Mat grey_image;
+    cv::cvtColor(color_image, grey_image, cv::COLOR_BGR2GRAY);
+
+    int height = grey_image.rows;
+    int width = grey_image.cols;
+    printf("Image Dims: %dx%d\n", width, height);
+
+
+    // CPU initializing stuff on Host
+    printf("Initializing Kernel\n");
+    int k = 2;
+    int kernel_length = 2 * k + 1;
+    size_t bytes_kernel = pow(kernel_length, 2) * sizeof(double);
+    double *kernel = (double*) malloc(bytes_kernel);
+
+    init_kernel(kernel, kernel_length); 
+    normalize_kernel(kernel, kernel_length); 
+
+    size_t bytes_matrix = height * width * sizeof(int);
+    int *image_matrix = (int*) malloc(bytes_matrix);
+    set_image_matrix(grey_image, image_matrix); 
+
+
+    // copy kernel to __constant__ gpu block
+    cudaMemcpyToSymbol(device_kernel, kernel, bytes_kernel);
+    
+    // copy matrix to gpu
+    int *device_image_matrix;
+    cudaMalloc(&device_image_matrix, bytes_matrix);
+    cudaMemcpy(device_image_matrix, image_matrix, bytes_matrix, cudaMemcpyHostToDevice);
+
+    int *device_result_matrix;
+    cudaMalloc(&device_result_matrix, bytes_matrix);
+
+    // set cuda grid
+    int num_threads = 16;
+    int num_blocks_x = (width + num_threads - 1) / num_threads;  
+    int num_blocks_y = (height + num_threads - 1) / num_threads; 
+
+    dim3 block_dim(num_threads, num_threads);   // each block has num_threads threads in x and y dimensions
+    dim3 grid_dim(num_blocks_x, num_blocks_y);  // a grid will have num_blocks blocks in x and y dimensions
+     
+    // perform convolution
+    long start_time = clock();
+    convolve<<< grid_dim, block_dim >>>(device_image_matrix, device_result_matrix, height, width, device_kernel, kernel_length);
+    long end_time = clock();
+
+    double total_time = (double) (end_time - start_time) / CLOCKS_PER_SEC;
+    printf("Convolution Time: %fs\n", total_time);
+
+    // write to new image
+    int *result_matrix = (int*) malloc(bytes_matrix);
+    cudaMemcpy(result_matrix, device_result_matrix, bytes_matrix, cudaMemcpyDeviceToHost);
+
+    set_image_matrix(grey_image, result_matrix); 
+    cv::imwrite("output_cuda.jpg", grey_image);
+    
+    cudaFree(device_image_matrix);
+    cudaFree(device_kernel);
+    cudaFree(device_result_matrix);
+    free(kernel);
+    free(image_matrix);
+    free(result_matrix);
+    return 0;
+}
+
+std::string get_image_name(std::string arg) {
+    if(arg.compare("harold.jpg") == 0 || arg.compare("harold") == 0) {
+        return "../images/harold.jpg";
+    } 
+    if(arg.compare("misha_mansoor.jpg") == 0 || arg.compare("misha") == 0) {
+        return "../images/misha_mansoor.jpg";
+    }
+    if(arg.compare("christmas.jpg") == 0 || arg.compare("xmas") == 0) {
+        return "../images/christmas.jpg";
+    }
+    return "invalid";
+}
+
+__global__ void convolve(int *matrix, int *result_matrix, int height, int width, double *kernel, int kernel_length) {
     int x_index = blockIdx.x * blockDim.x + threadIdx.x;
     int y_index = blockIdx.y * blockDim.y + threadIdx.y;
 
-    double sum = 0;
     int k = kernel_length / 2;
+    double sum = 0;
 
     for(int i = -k; i <= k; i++) {
         for(int j = -k; j <= k; j++) {
-            int converted_i = i + k;
-            int converted_j = j + k;
 
-            if( converted_i >= 0 && 
-                converted_i < kernel_length &&
-                converted_j >= 0 &&
-                converted_j < kernel_length ) {
-                
-                    sum += kernel_store[converted_i * kernel_length + converted_j] * (double)matrix[(y_index + j) * width + (x_index + i)];
+            if(i + x_index >= 0 && i + x_index < width) {
+                if(j + y_index >= 0 && j + y_index < height) {
+                    sum += matrix[(i + x_index) * width + (j + y_index)] * kernel[(i + k) * kernel_length + (j + k)];
+                }
             }
+
         }
     }
 
-    matrix[y_index * width + x_index] = sum;
+    double pixel_value = sum;
+    if(pixel_value > 255) {
+        pixel_value = 255;
+    }
+    if(pixel_value < 0) {
+        pixel_value = 0;
+    }
+
+    result_matrix[x_index * width + y_index] = (int) pixel_value;
 }
 
-void init_kernel() {
-    double *host_kernel = (double*) malloc(kernel_length * kernel_length * sizeof(double)); 
+void init_kernel(double *kernel, int kernel_length) {
+    for(int i = 0; i < kernel_length; i++) {
+        for(int j = 0; j < kernel_length; j++) {
+            kernel[i * kernel_length + j] = 1;
+        }
+    }
+}
+
+void normalize_kernel(double *kernel, int kernel_length) {
+    double sum = 0;
+    for(int i = 0; i < kernel_length; i++) {
+        for(int j = 0; j < kernel_length; j++) {
+            sum += kernel[i * kernel_length + j];
+        }
+    }
 
     for(int i = 0; i < kernel_length; i++) {
         for(int j = 0; j < kernel_length; j++) {
-            host_kernel[i * kernel_length + j] = 1 / kernel_length;
+            kernel[i * kernel_length + j] /= sum;
         }
     }
-
-    cudaMemcpy(kernel_store, host_kernel, kernel_length * kernel_length * sizeof(double), cudaMemcpyHostToDevice);
-
-    free(host_kernel);
 }
 
-int main(int argc, char **argv) {
-    // get image name from command args
-    if(argc != 2) {
-        printf("usage: ./boxblur <name of image from /images>\n");
-        return 1;
-    }
-
-    std::string filename;
-    if(strcmp(argv[1], "harold") == 0) 
-        filename = "../images/harold.jpg";
-    else if(strcmp(argv[1], "misha") == 0) 
-        filename = "../images/misha_mansoor.jpg";
-    else {
-        printf("invalid image name\n");
-        return 1;
-    }
-
-    init_kernel();
-
-    for(int i = 0;)
-
-
-    cv::Mat image = cv::imread(filename);
-    int height = image.rows;
-    int width = image.cols;
-
-    int *blue_matrix  = (int*) malloc(height * width * sizeof(int));
-    int *green_matrix = (int*) malloc(height * width * sizeof(int));
-    int *red_matrix   = (int*) malloc(height * width * sizeof(int));
-
-    for(int i = 0; i < height; i++) {
-        for(int j = 0; j < width; j++) {
-             blue_matrix[i * width + j] = image.at<cv::Vec3b>(i, j)[0];
-            green_matrix[i * width + j] = image.at<cv::Vec3b>(i, j)[1];
-              red_matrix[i * width + j] = image.at<cv::Vec3b>(i, j)[2];
+void get_image_matrix(cv::Mat image, int *matrix) {
+    for(int i = 0; i < image.rows; i++) {
+        for(int j = 0; j < image.cols; j++) {
+            matrix[i * image.cols + j] = image.at<uchar>(i, j);
         }
     }
+}
 
-    int *device_blue_matrix;
-    int *device_green_matrix;
-    int *device_red_matrix;
-
-    cudaMalloc((void**)&device_blue_matrix, height * width * sizeof(int));
-    cudaMalloc((void**)&device_green_matrix, height * width * sizeof(int));
-    cudaMalloc((void**)&device_red_matrix, height * width * sizeof(int));
-
-    cudaMemcpy(device_blue_matrix, blue_matrix, height * width * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(device_green_matrix, green_matrix, height * width * sizeof(int), cudaMemcpyHostToDevice);
-    cudaMemcpy(device_red_matrix, red_matrix, height * width * sizeof(int), cudaMemcpyHostToDevice);
-
-    convolve<<<height, width>>>(device_blue_matrix, height, width, kernel_length);
-    convolve<<<height, width>>>(device_green_matrix, height, width, kernel_length);
-    convolve<<<height, width>>>(device_red_matrix, height, width, kernel_length);
-
-    cudaMemcpy(blue_matrix, device_blue_matrix, height * width * sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(green_matrix, device_green_matrix, height * width * sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(red_matrix, device_red_matrix, height * width * sizeof(int), cudaMemcpyDeviceToHost);
-
-    for(int i = 0; i < height; i++) {
-        for(int j = 0; j < width; j++) {
-            image.at<cv::Vec3b>(i, j)[0] =  blue_matrix[i * width + j];
-            image.at<cv::Vec3b>(i, j)[1] = green_matrix[i * width + j];
-            image.at<cv::Vec3b>(i, j)[2] =   red_matrix[i * width + j];
+void set_image_matrix(cv::Mat image, int *matrix) {
+    for(int i = 0; i < image.rows; i++) {
+        for(int j = 0; j < image.cols; j++) {
+            image.at<uchar>(i, j) = matrix[i * image.cols + j];
         }
     }
-
-    cv::imwrite("harold.jpg", image);
-
-    cudaFree(device_blue_matrix);
-    cudaFree(device_green_matrix);
-    cudaFree(device_red_matrix);
-
-    free(blue_matrix);
-    free(green_matrix);
-    free(red_matrix);
-
-    return 0;
 }
