@@ -1,20 +1,19 @@
 NVCC = nvcc
-NV_FLAGS = -g -L/lib -lc++
+NV_FLAGS = -g -L/lib -I/usr/local/include/opencv4 -L/usr/local/lib
 
 PRGM = sobel
-SRCS = $(shell find *.cu) 
-OBJS = $(SRCS:*.cu=*.o)
-
-OPENCV = -I/usr/local/include/opencv4 -L/usr/local/lib -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc
+SRCS = sobel.cu
+OBJS = sobel.o
+LIBS = -lc++ -lm -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc
 
 $(PRGM): $(OBJS)
-	$(NVCC) $(NV_FLAGS) -o run $^ $(OPENCV) -lm
+	$(NVCC) $(NV_FLAGS) -o $@ $^ $(LIBS)
 
 $(OBJS): $(SRCS)
-	$(NVCC) $(NV_FLAGS) -c $^ $(OPENCV) -lm
+	$(NVCC) $(NV_FLAGS) -c $^
 
 serial: serial.cpp
-	g++ -L/lib -lc++ -o serial serial.cpp  $(OPENCV)
+	g++ $(NV_FLAGS) -o serial serial.cpp $(LIBS)
 
 clean: 
 	rm -rf *.o $(PRGM)
