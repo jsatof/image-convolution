@@ -6,14 +6,35 @@
 #define PI acos(-1)
 
 std::string get_image_name(std::string arg);
-void check_pixel(double value);
-void get_image_colors(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix);
-void set_image_colors(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix);
+void image_to_matrix(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix);
+void matrix_to_image(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix);
 void init_kernel(double *kernel, int kernel_length);
 void normalize_kernel(double *kernel, int kernel_length);
 double gaussian_value(int x, int y, int sigma);
-void convolve(int *blue_matrix, int *green_matrix, int *red_matrix, int height, int width, double *kernel, int kernel_length);
 
+void convolve(int *input, int *output, int height, int width, double *kernel, int kernel_length) {
+    int k = kernel_length / 2;
+
+    for(int i = 0; i < height; i++) {
+        for(int j = 0; j < width; j++) {
+            
+            double sum = 0;
+
+            for(int u = -k; u <= k; u++) {
+                for(int v = -k; v <= k; v++) {
+                    if(i + u < height && j + v < width && i + u >= 0 && j + v >= 0) {
+                        double kernel_value = kernel[(u + k) * kernel_length + (v + k)];
+                        int matrix_value = input[(i + u) * width + (j + v)];
+
+                        sum += matrix_value * kernel_value;
+                    }
+                }
+            }
+
+            output[i * width + j] = (int) sum;
+        }
+    }
+}
 
 int main(int argc, char **argv) {
     if(argc != 2) {
@@ -32,80 +53,41 @@ int main(int argc, char **argv) {
     int height = image.rows;
     int width = image.cols;
 
-
-    int k = 6;
-    int kernel_length = 2 * k + 1;
-    double *kernel = (double*) malloc(pow(kernel_length, 2) * sizeof(double));
-
-    init_kernel(kernel, kernel_length);
-    normalize_kernel(kernel, kernel_length);
-
     int *blue_matrix = (int*) malloc(height * width * sizeof(int));
     int *green_matrix = (int*) malloc(height * width * sizeof(int));
     int *red_matrix = (int*) malloc(height * width * sizeof(int));
+    image_to_matrix(image, blue_matrix, green_matrix, red_matrix);
 
-    get_image_colors(image, blue_matrix, green_matrix, red_matrix);
+    int kernel_length = 7;
+    double *kernel = (double*) malloc(pow(kernel_length, 2) * sizeof(double));
+    init_kernel(kernel, kernel_length);
+    normalize_kernel(kernel, kernel_length);
+
+    int *blue_result = (int*) malloc(height * width * sizeof(int));
+    int *green_result = (int*) malloc(height * width * sizeof(int));
+    int *red_result = (int*) malloc(height * width * sizeof(int));
 
     // record convolve time
     long start_time = clock();
-    convolve(blue_matrix, green_matrix, red_matrix, height, width, kernel, kernel_length);
+    convolve(blue_matrix, blue_result, height, width, kernel, kernel_length);
+    convolve(green_matrix, green_result, height, width, kernel, kernel_length);
+    convolve(red_matrix, red_result, height, width, kernel, kernel_length);
     long end_time = clock();
 
     double total_time = (double) (end_time - start_time) / CLOCKS_PER_SEC;
-    std::cout << "Convolution Time: " << total_time << std::endl;
+    printf("Convolution Time: %fs\n", total_time);
 
-
-    set_image_colors(image, blue_matrix, green_matrix, red_matrix);
+    matrix_to_image(image, blue_result, green_result, red_result);
     cv::imwrite("output_serial.jpg", image);
 
     free(kernel);
     free(blue_matrix);
     free(green_matrix);
     free(red_matrix);
+    free(blue_result);
+    free(green_result);
+    free(red_result);
     return 0;
-}
-
-void convolve(int *blue_matrix, int *green_matrix, int *red_matrix, int height, int width, double *kernel, int kernel_length) {
-    int k = kernel_length / 2;
-
-    for(int i = 0; i < height; i++) {
-        for(int j = 0; j < width; j++) {
-            
-            double blue_sum = 0;
-            double green_sum = 0;
-            double red_sum = 0;
-            for(int u = -k; u <= k; u++) {
-                for(int v = -k; v <= k; v++) {
-                    if(i + u < height && j + v < width &&
-                       i + u >= 0 && j + v >= 0) {
-
-                        blue_sum  += kernel[(u + 5) * kernel_length + (v + 5)] *  blue_matrix[(i + u) * width + (j + v)];
-                        green_sum += kernel[(u + 5) * kernel_length + (v + 5)] * green_matrix[(i + u) * width + (j + v)];
-                        red_sum   += kernel[(u + 5) * kernel_length + (v + 5)] *   red_matrix[(i + u) * width + (j + v)]; 
-                    }
-                }
-            }
-
-            double blue_value  = blue_sum;
-            double green_value = green_sum;
-            double red_value   = red_sum;
-
-            check_pixel(blue_value);
-            check_pixel(green_value);
-            check_pixel(red_value);
-
-            blue_matrix[i * width + j] = blue_value;
-            green_matrix[i * width + j] = green_value;
-            red_matrix[i * width + j] = red_value;
-        }
-    }
-}
-
-void check_pixel(double value) {
-    if(value > 255)
-        value = 255;
-    if(value < 0)
-        value = 0;
 }
 
 std::string get_image_name(std::string arg) {
@@ -129,8 +111,8 @@ double gaussian_value(int x, int y, int sigma) {
 }
 
 void init_kernel(double *kernel, int kernel_length) {
-    int sigma = 5;
-    int k = (kernel_length - 1) / 2;
+    int sigma = 10;
+    int k = kernel_length / 2;
 
     for(int i = -k; i <= k; i++) {
         for(int j = -k; j <= k ; j++) {
@@ -155,7 +137,7 @@ void normalize_kernel(double *kernel, int kernel_length) {
     }
 }
 
-void get_image_colors(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix) {
+void image_to_matrix(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix) {
     for(int i = 0; i < image.rows; i++) {
         for(int j = 0; j < image.cols; j++) {
             blue_matrix[i * image.cols + j] = image.at<cv::Vec3b>(i, j)[0];
@@ -165,7 +147,7 @@ void get_image_colors(cv::Mat image, int *blue_matrix, int *green_matrix, int *r
     }
 }
 
-void set_image_colors(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix) {
+void matrix_to_image(cv::Mat image, int *blue_matrix, int *green_matrix, int *red_matrix) {
     for(int i = 0; i < image.rows; i++) {
         for(int j = 0; j < image.cols; j++) {
             image.at<cv::Vec3b>(i, j)[0] = blue_matrix[i * image.cols + j];
