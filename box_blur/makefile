@@ -4,7 +4,7 @@ NV_FLAGS = -g -L/lib -I/usr/local/include/opencv4 -L/usr/local/lib
 PRGM = boxblur
 SRCS = box_blur.cu
 OBJS = box_blur.o
-LIBS = -lm -lc++ -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc
+LIBS = -lm -lstdc++ -lopencv_core -lopencv_highgui -lopencv_imgcodecs -lopencv_imgproc
 
 $(PRGM): $(OBJS)
 	$(NVCC) $(NV_FLAGS) -o $@ $^ $(LIBS)
