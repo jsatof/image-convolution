@@ -14,7 +14,7 @@ $(OBJS): $(SRCS)
 	$(NVCC) $(NV_FLAGS) -c $^ $(OPENCV) -lm
 
 serial: serial.cpp
-	g++ -L/lib -lc++ -o serial serial.cpp  $(OPENCV)
+	g++ -g -L/lib -lc++ -o serial serial.cpp  $(OPENCV)
 
 clean: 
-	rm -rf *.o $(PRGM)
+	rm -rf *.o $(PRGM) serial
