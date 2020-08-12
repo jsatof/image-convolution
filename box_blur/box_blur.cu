@@ -2,16 +2,41 @@
 #include <stdlib.h>
 #include <opencv2/opencv.hpp>
 
-// fast memory block on gpu, 5x5 kernel
-__constant__ double device_kernel[25];
-
-// prototype for helper functions
+// prototypes for helper functions
 std::string get_image_name(std::string arg);
-__global__ void convolve(int *matrix, int *result_matrix, int height, int width, double *device_kernel, int kernel_length);
-void init_kernel(double *kernel, int kernel_length);
-void normalize_kernel(double *kernel, int kernel_length);
-void get_image_matrix(cv::Mat image, int *matrix); 
-void set_image_matrix(cv::Mat image, int *matrix);
+void init_kernel(float *kernel, int kernel_length);
+void image_to_matrix(cv::Mat image, int *blue, int *green, int *red); 
+void matrix_to_image(cv::Mat image, int *blue, int *green, int *red);
+__global__ void check_pixel(float value);
+
+__global__ void convolve(int *in_blue, int *in_green, int *in_red, int *out_blue, int *out_green, int *out_red,
+                            int width, float *kernel, int kernel_length) 
+{
+    int x = blockIdx.x * blockDim.x + threadIdx.x;
+    int y = blockIdx.y * blockDim.y + threadIdx.y;
+
+    int k = kernel_length / 2;
+    float blue_sum = 0.0;
+    float green_sum = 0.0;
+    float red_sum = 0.0;
+
+    for(int i = -k; i <= k; i++) {
+        for(int j = -k; j <= k; j++) {
+            float kernel_value = kernel[(i + k) * kernel_length + (j + k)];
+            int blue_value = in_blue[(i + x) * width + (j + y)];
+            int green_value = in_green[(i + x) * width + (j + y)];
+            int red_value = in_red[(i + x) * width + (j + y)];
+
+            blue_sum += blue_value * kernel_value;
+            green_sum += green_value * kernel_value;
+            red_sum += red_value * kernel_value;
+        }
+    }
+
+    out_blue[x * width + y] = blue_sum;
+    out_green[x * width + y] = green_sum;
+    out_red[x * width + y] = red_sum;
+}
 
 
 int main(int argc, char **argv) {
@@ -28,69 +53,79 @@ int main(int argc, char **argv) {
     }
 
     cv::Mat color_image = cv::imread(filename);
-    cv::Mat grey_image;
-    cv::cvtColor(color_image, grey_image, cv::COLOR_BGR2GRAY);
+    cv::Mat gray_image;
+    cv::cvtColor(color_image, gray_image, cv::COLOR_BGR2GRAY);
+    int height = gray_image.rows;
+    int width = gray_image.cols;
 
-    int height = grey_image.rows;
-    int width = grey_image.cols;
-    printf("Image Dims: %dx%d\n", width, height);
+    size_t bytes_image = height * width * sizeof(int);
+    int *h_blue = (int*) malloc(bytes_image);
+    int *h_green = (int*) malloc(bytes_image);
+    int *h_red = (int*) malloc(bytes_image);
+    image_to_matrix(color_image, h_blue, h_green, h_red);
 
+    int *d_blue;
+    cudaMalloc(&d_blue, bytes_image);
+    cudaMemcpy(d_blue, h_blue, bytes_image, cudaMemcpyHostToDevice);
+    int *d_green;
+    cudaMalloc(&d_green, bytes_image);
+    cudaMemcpy(d_green, h_green, bytes_image, cudaMemcpyHostToDevice);
+    int *d_red;
+    cudaMalloc(&d_red, bytes_image);
+    cudaMemcpy(d_red, h_red, bytes_image, cudaMemcpyHostToDevice);
 
-    // CPU initializing stuff on Host
-    printf("Initializing Kernel\n");
-    int k = 2;
-    int kernel_length = 2 * k + 1;
-    size_t bytes_kernel = pow(kernel_length, 2) * sizeof(double);
-    double *kernel = (double*) malloc(bytes_kernel);
+    int kernel_length = 11;
+    size_t bytes_kernel = pow(kernel_length, 2) * sizeof(float);
+    float *h_kernel = (float*) malloc(bytes_kernel);
+    init_kernel(h_kernel, kernel_length); 
 
-    init_kernel(kernel, kernel_length); 
-    normalize_kernel(kernel, kernel_length); 
-
-    size_t bytes_matrix = height * width * sizeof(int);
-    int *image_matrix = (int*) malloc(bytes_matrix);
-    set_image_matrix(grey_image, image_matrix); 
-
-
-    // copy kernel to __constant__ gpu block
-    cudaMemcpyToSymbol(device_kernel, kernel, bytes_kernel);
+    float *d_kernel;
+    cudaMalloc(&d_kernel, bytes_kernel);
+    cudaMemcpy(d_kernel, h_kernel, bytes_kernel, cudaMemcpyHostToDevice);
     
-    // copy matrix to gpu
-    int *device_image_matrix;
-    cudaMalloc(&device_image_matrix, bytes_matrix);
-    cudaMemcpy(device_image_matrix, image_matrix, bytes_matrix, cudaMemcpyHostToDevice);
+    int *d_result_blue;
+    cudaMalloc(&d_result_blue, bytes_image);
+    int *d_result_green;
+    cudaMalloc(&d_result_green, bytes_image);
+    int *d_result_red;
+    cudaMalloc(&d_result_red, bytes_image);
 
-    int *device_result_matrix;
-    cudaMalloc(&device_result_matrix, bytes_matrix);
-
-    // set cuda grid
     int num_threads = 16;
-    int num_blocks_x = (width + num_threads - 1) / num_threads;  
-    int num_blocks_y = (height + num_threads - 1) / num_threads; 
+    dim3 threads(num_threads, num_threads);
+    dim3 blocks(width / num_threads + 1, height / num_threads + 1);
 
-    dim3 block_dim(num_threads, num_threads);   // each block has num_threads threads in x and y dimensions
-    dim3 grid_dim(num_blocks_x, num_blocks_y);  // a grid will have num_blocks blocks in x and y dimensions
-     
-    // perform convolution
     long start_time = clock();
-    convolve<<< grid_dim, block_dim >>>(device_image_matrix, device_result_matrix, height, width, device_kernel, kernel_length);
+    convolve <<< blocks, threads >>> (d_blue, d_green, d_red, d_result_blue, d_result_green, d_result_red, width, d_kernel, kernel_length);
     long end_time = clock();
 
-    double total_time = (double) (end_time - start_time) / CLOCKS_PER_SEC;
-    printf("Convolution Time: %fs\n", total_time);
+    int *h_result_blue = (int*) malloc(bytes_image);
+    cudaMemcpy(h_result_blue, d_result_blue, bytes_image, cudaMemcpyDeviceToHost);
+    int *h_result_green = (int*) malloc(bytes_image);
+    cudaMemcpy(h_result_green, d_result_green, bytes_image, cudaMemcpyDeviceToHost);
+    int *h_result_red = (int*) malloc(bytes_image);
+    cudaMemcpy(h_result_red, d_result_red, bytes_image, cudaMemcpyDeviceToHost);
 
-    // write to new image
-    int *result_matrix = (int*) malloc(bytes_matrix);
-    cudaMemcpy(result_matrix, device_result_matrix, bytes_matrix, cudaMemcpyDeviceToHost);
+    matrix_to_image(color_image, h_result_blue, h_result_green, h_result_red); 
+    cv::imwrite("output_cuda.jpg", color_image);
 
-    set_image_matrix(grey_image, result_matrix); 
-    cv::imwrite("output_cuda.jpg", grey_image);
-    
-    cudaFree(device_image_matrix);
-    cudaFree(device_kernel);
-    cudaFree(device_result_matrix);
-    free(kernel);
-    free(image_matrix);
-    free(result_matrix);
+    double conv_time = (double) (end_time - start_time) / CLOCKS_PER_SEC;
+    std::cout << "Convolution Time: " << conv_time << "s" << std::endl;
+
+    free(h_blue);
+    free(h_green);
+    free(h_red);
+    free(h_kernel);
+    free(h_result_blue);
+    free(h_result_green);
+    free(h_result_red);
+    cudaFree(d_blue);
+    cudaFree(d_green);
+    cudaFree(d_red);
+    cudaFree(d_kernel);
+    cudaFree(d_result_blue);
+    cudaFree(d_result_green);
+    cudaFree(d_result_red);
+
     return 0;
 }
 
@@ -107,71 +142,37 @@ std::string get_image_name(std::string arg) {
     return "invalid";
 }
 
-__global__ void convolve(int *matrix, int *result_matrix, int height, int width, double *kernel, int kernel_length) {
-    int x_index = blockIdx.x * blockDim.x + threadIdx.x;
-    int y_index = blockIdx.y * blockDim.y + threadIdx.y;
-
-    int k = kernel_length / 2;
-    double sum = 0;
-
-    for(int i = -k; i <= k; i++) {
-        for(int j = -k; j <= k; j++) {
-
-            if(i + x_index >= 0 && i + x_index < width) {
-                if(j + y_index >= 0 && j + y_index < height) {
-                    sum += matrix[(i + x_index) * width + (j + y_index)] * kernel[(i + k) * kernel_length + (j + k)];
-                }
-            }
-
-        }
-    }
-
-    double pixel_value = sum;
-    if(pixel_value > 255) {
-        pixel_value = 255;
-    }
-    if(pixel_value < 0) {
-        pixel_value = 0;
-    }
-
-    result_matrix[x_index * width + y_index] = (int) pixel_value;
-}
-
-void init_kernel(double *kernel, int kernel_length) {
+void init_kernel(float *kernel, int kernel_length) {
     for(int i = 0; i < kernel_length; i++) {
         for(int j = 0; j < kernel_length; j++) {
-            kernel[i * kernel_length + j] = 1;
+            kernel[i * kernel_length + j] = 1 / pow(kernel_length, 2);
         }
     }
 }
 
-void normalize_kernel(double *kernel, int kernel_length) {
-    double sum = 0;
-    for(int i = 0; i < kernel_length; i++) {
-        for(int j = 0; j < kernel_length; j++) {
-            sum += kernel[i * kernel_length + j];
-        }
-    }
-
-    for(int i = 0; i < kernel_length; i++) {
-        for(int j = 0; j < kernel_length; j++) {
-            kernel[i * kernel_length + j] /= sum;
-        }
-    }
-}
-
-void get_image_matrix(cv::Mat image, int *matrix) {
+void matrix_to_image(cv::Mat image, int *blue, int *green, int *red) {
     for(int i = 0; i < image.rows; i++) {
         for(int j = 0; j < image.cols; j++) {
-            matrix[i * image.cols + j] = image.at<uchar>(i, j);
+            image.at<cv::Vec3b>(i, j)[0] = blue[i * image.cols + j];
+            image.at<cv::Vec3b>(i, j)[1] = green[i * image.cols + j];
+            image.at<cv::Vec3b>(i, j)[2] = red[i * image.cols + j];
         }
     }
 }
 
-void set_image_matrix(cv::Mat image, int *matrix) {
+void image_to_matrix(cv::Mat image, int *blue, int *green, int *red) {
     for(int i = 0; i < image.rows; i++) {
         for(int j = 0; j < image.cols; j++) {
-            image.at<uchar>(i, j) = matrix[i * image.cols + j];
+            blue[i * image.cols + j] = image.at<cv::Vec3b>(i, j)[0];
+            green[i * image.cols + j] = image.at<cv::Vec3b>(i, j)[1];
+            red[i * image.cols + j] = image.at<cv::Vec3b>(i, j)[2];
         }
     }
+}
+
+__global__ void check_pixel(float value) {
+    if(value > 255)
+        value = 255;
+    if(value < 0)
+        value = 0;
 }
